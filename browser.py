@@ -1,6 +1,9 @@
 import socket
 import ssl
 
+HSTEP, VSTEP = 13, 18
+cursor_x, cursor_y = HSTEP, VSTEP
+
 class URL:
   def __init__(self, url):
     self.scheme, url = url.split("://", 1)
@@ -51,7 +54,8 @@ class URL:
 
       return body
 
-def show(body):
+def lex(body):
+  text = ""
   in_tag = False
   for c in body:
     if c == "<":
@@ -59,11 +63,17 @@ def show(body):
     elif c == ">":
       in_tag = False
     elif not in_tag:
-      print(c, end="")
+      text += c
+  return text
 
 def load(url):
+  from browser_canvas import BrowserCanvas
   body = url.request()
-  show(body)
+  text = lex(body)
+  for c in text:
+    BrowserCanvas.create_text(cursor_x, cursor_y, text=c)
+    cursor_x += HSTEP
+    cursor_y += VSTEP
 
 if __name__ == "__main__":
   import sys
