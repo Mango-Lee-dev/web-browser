@@ -1,5 +1,6 @@
 import socket
 import ssl
+import tkinter as tk
 
 class URL:
   def __init__(self, url):
@@ -30,7 +31,11 @@ class URL:
       s.connect((self.host, self.port))
 
       if self.scheme == "https":
-        ctx = ssl.create_default_context()
+        try:
+          import certifi
+          ctx = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+          ctx = ssl.create_default_context()
         s = ctx.wrap_socket(s, server_hostname=self.host)
       
       request = "GET {} HTTP/1.0\r\n".format(self.path)
@@ -55,7 +60,8 @@ class URL:
     finally:
       s.close()
 
-  def show(self, body):
+  def lex(self, body):
+    text = ""
     in_tag = False
     for c in body:
       if c == "<":
@@ -63,14 +69,58 @@ class URL:
       elif c == ">":
         in_tag = False
       elif not in_tag:
-        print(c, end="")
+        text += c
+    return text
 
-  @staticmethod
-  def load(url):
+
+WIDTH, HEIGHT = 800, 600
+HSTEP, VSTEP = 13, 18
+
+SCROLL_STEP = 100
+
+def layout(text):
+  display_list = []
+  cursor_x, cursor_y = HSTEP, VSTEP
+  for c in text:
+    display_list.append((cursor_x, cursor_y, c))
+    cursor_x += HSTEP
+    if cursor_x > WIDTH - HSTEP:
+      cursor_y += VSTEP
+      cursor_x = HSTEP
+  return display_list
+
+class Browser:
+  def __init__(self):
+    self.window = tk.Tk()
+    self.canvas = tk.Canvas(
+      self.window,
+      width=WIDTH,
+      height=HEIGHT,
+    )
+    self.canvas.pack()
+    self.scroll = 0
+
+    self.window.bind("<Down>", self.scrolldown)
+
+  def draw(self):
+    self.canvas.delete("all")
+    for x, y, c in self.display_list:
+      if y > self.scroll + HEIGHT: continue
+      if y + VSTEP < self.scroll: continue
+      self.canvas.create_text(x, y - self.scroll, text=c)
+
+  def load(self, url):
     u = URL(url)
     body = u.request()
-    u.show(body)
+    text = u.lex(body)
+    self.display_list = layout(text)
+    self.draw()
+
+  def scrolldown(self, e):
+    self.scroll += SCROLL_STEP
+    self.draw()
 
 if __name__ == "__main__":
   import sys
-  URL.load(sys.argv[1])
+  Browser().load(sys.argv[1])
+  tk.mainloop()
