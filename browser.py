@@ -90,8 +90,25 @@ class HttpClient:
 
 class Text:
     """HTML 텍스트 노드"""
-    def __init__(self, text):
+    def __init__(self, text, parent=None):
         self.text = text
+        self.children = []
+        self.parent = parent
+
+    def __repr__(self):
+        return repr(self.text)
+
+
+class Element:
+    """HTML 엘리먼트 노드"""
+    def __init__(self, tag, attributes, parent):
+        self.tag = tag
+        self.attributes = attributes
+        self.children = []
+        self.parent = parent
+
+    def __repr__(self):
+        return "<" + self.tag + ">"
 
 
 class Tag:
@@ -249,6 +266,120 @@ class Browser:
     def scrolldown(self, e):
         self.scroll += self.config.scroll_step
         self.draw()
+
+SELF_CLOSING_TAGS = [
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+]
+
+HEAD_TAGS = [
+    "base", "basefont", "bgsound", "noscript",
+    "link", "meta", "title", "style", "script",
+]
+
+
+class HTMLParser:
+    """HTML을 파싱하여 DOM 트리 생성"""
+
+    def __init__(self, body):
+        self.body = body
+        self.unfinished = []
+
+    def get_attributes(self, text):
+        """태그 텍스트에서 태그 이름과 속성을 파싱"""
+        parts = text.split()
+        tag = parts[0].casefold()
+        attributes = {}
+        for attrpair in parts[1:]:
+            if "=" in attrpair:
+                key, value = attrpair.split("=", 1)
+                # 따옴표 제거
+                if len(value) > 2 and value[0] in ["'", '"']:
+                    value = value[1:-1]
+                attributes[key.casefold()] = value
+            else:
+                attributes[attrpair.casefold()] = ""
+        return tag, attributes
+
+    def add_text(self, text):
+        """텍스트 노드를 현재 부모에 추가"""
+        if text.isspace():
+            return
+        self.implicit_tags(None)
+        parent = self.unfinished[-1]
+        node = Text(text, parent)
+        parent.children.append(node)
+
+    def add_tag(self, tag):
+        """태그를 처리하여 트리에 추가"""
+        tag, attributes = self.get_attributes(tag)
+        if tag.startswith("!"):
+            return  # DOCTYPE, 주석 등 무시
+        self.implicit_tags(tag)
+
+        if tag.startswith("/"):
+            # 닫는 태그
+            if len(self.unfinished) == 1:
+                return
+            node = self.unfinished.pop()
+            parent = self.unfinished[-1]
+            parent.children.append(node)
+        elif tag in SELF_CLOSING_TAGS:
+            # self-closing 태그
+            parent = self.unfinished[-1]
+            node = Element(tag, attributes, parent)
+            parent.children.append(node)
+        else:
+            # 여는 태그
+            parent = self.unfinished[-1] if self.unfinished else None
+            node = Element(tag, attributes, parent)
+            self.unfinished.append(node)
+
+    def implicit_tags(self, tag):
+        """암묵적 태그 자동 삽입 (html, head, body)"""
+        while True:
+            open_tags = [node.tag for node in self.unfinished]
+            if open_tags == [] and tag != "html":
+                self.add_tag("html")
+            elif open_tags == ["html"] and tag not in ["head", "body", "/html"]:
+                if tag in HEAD_TAGS:
+                    self.add_tag("head")
+                else:
+                    self.add_tag("body")
+            elif open_tags == ["html", "head"] and tag not in ["/head"] + HEAD_TAGS:
+                self.add_tag("/head")
+            else:
+                break
+
+    def finish(self):
+        """모든 열린 태그를 닫고 루트 노드 반환"""
+        if not self.unfinished:
+            self.implicit_tags(None)
+        while len(self.unfinished) > 1:
+            node = self.unfinished.pop()
+            parent = self.unfinished[-1]
+            parent.children.append(node)
+        return self.unfinished.pop()
+
+    def parse(self):
+        """HTML 문자열을 파싱하여 DOM 트리 반환"""
+        text = ""
+        in_tag = False
+        for c in self.body:
+            if c == "<":
+                in_tag = True
+                if text:
+                    self.add_text(text)
+                text = ""
+            elif c == ">":
+                in_tag = False
+                self.add_tag(text)
+                text = ""
+            else:
+                text += c
+        if not in_tag and text:
+            self.add_text(text)
+        return self.finish()
 
 if __name__ == "__main__":
     import sys
