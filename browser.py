@@ -381,6 +381,14 @@ class HTMLParser:
             self.add_text(text)
         return self.finish()
 
+    @staticmethod
+    def print_tree(node, indent=0):
+        """DOM 트리를 들여쓰기하여 출력"""
+        print(" " * indent, node)
+        for child in node.children:
+            HTMLParser.print_tree(child, indent + 2)
+
+
 if __name__ == "__main__":
     import sys
 
