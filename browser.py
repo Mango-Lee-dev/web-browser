@@ -111,33 +111,6 @@ class Element:
         return "<" + self.tag + ">"
 
 
-class Tag:
-    """HTML 태그 노드"""
-    def __init__(self, tag):
-        self.tag = tag
-
-
-class HTMLLexer:
-    """HTML을 Text/Tag 토큰으로 변환"""
-    def tokenize(self, body):
-        tokens = []
-        buffer = ""
-        in_tag = False
-        for c in body:
-            if c == "<":
-                in_tag = True
-                if buffer:
-                    tokens.append(Text(buffer))
-                buffer = ""
-            elif c == ">":
-                in_tag = False
-                tokens.append(Tag(buffer))
-                buffer = ""
-            else:
-                buffer += c
-        if not in_tag and buffer:
-            tokens.append(Text(buffer))
-        return tokens
 
 class BrowserConfig:
     """브라우저 설정 관리"""
@@ -167,8 +140,7 @@ class FontCache:
         return self._cache[key]
 
 class Layout:
-    def __init__(self, tokens, config, font_cache):
-        self.tokens = tokens
+    def __init__(self, tree, config, font_cache):
         self.config = config
         self.font_cache = font_cache
         self.display_list = []
@@ -180,33 +152,41 @@ class Layout:
         self.size = 12
 
         self.line = []
-        for tok in tokens:
-            self.token(tok)
+        self.recurse(tree)
         self.flush()
 
-    def token(self, tok):
-        if isinstance(tok, Text):
-            for word in tok.text.split():
+    def recurse(self, tree):
+        if isinstance(tree, Text):
+            for word in tree.text.split():
                 self.word(word)
-        elif tok.tag == "i":
+        else:
+            self.open_tag(tree.tag)
+            for child in tree.children:
+                self.recurse(child)
+            self.close_tag(tree.tag)
+
+    def open_tag(self, tag):
+        if tag == "i":
             self.style = "italic"
-        elif tok.tag == "/i":
-            self.style = "roman"
-        elif tok.tag == "b":
+        elif tag == "b":
             self.weight = "bold"
-        elif tok.tag == "/b":
-            self.weight = "normal"
-        elif tok.tag == "small":
+        elif tag == "small":
             self.size -= 2
-        elif tok.tag == "/small":
-            self.size += 2
-        elif tok.tag == "big":
+        elif tag == "big":
             self.size += 4
-        elif tok.tag == "/big":
-            self.size -= 4
-        elif tok.tag == "br":
+        elif tag == "br":
             self.flush()
-        elif tok.tag == "/p":
+
+    def close_tag(self, tag):
+        if tag == "i":
+            self.style = "roman"
+        elif tag == "b":
+            self.weight = "normal"
+        elif tag == "small":
+            self.size += 2
+        elif tag == "big":
+            self.size -= 4
+        elif tag == "p":
             self.flush()
             self.cursor_y += self.config.vstep
 
@@ -236,7 +216,6 @@ class Browser:
         self.config = config or BrowserConfig()
         self.font_cache = FontCache()
         self.http_client = HttpClient()
-        self.lexer = HTMLLexer()
 
         self.window = tkinter.Tk()
         self.canvas = tkinter.Canvas(
@@ -252,8 +231,8 @@ class Browser:
 
     def load(self, url):
         body = self.http_client.request(url)
-        tokens = self.lexer.tokenize(body)
-        self.display_list = Layout(tokens, self.config, self.font_cache).display_list
+        self.nodes = HTMLParser(body).parse()
+        self.display_list = Layout(self.nodes, self.config, self.font_cache).display_list
         self.draw()
 
     def draw(self):
