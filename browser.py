@@ -139,6 +139,16 @@ class FontCache:
             self._cache[key] = tkinter.font.Font(size=size, weight=weight, slant=style)
         return self._cache[key]
 
+# Layout class: Converts tokens to a display list with positioned text, handling inline formatting (bold, italic, size) and line wrapping
+# - tree: DOM tree
+# - config: Browser configuration
+# - font_cache: Font cache
+# - display_list: Display list
+# - cursor_x: Cursor x position
+# - cursor_y: Cursor y position
+# - weight: Font weight
+# - style: Font style
+# - size: Font size
 class Layout:
     def __init__(self, tree, config, font_cache):
         self.config = config
