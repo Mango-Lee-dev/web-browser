@@ -6,8 +6,9 @@ import tkinter.font
 
 class BrowserError(Exception):
   """브라우저 기본 예외"""
-
-  pass
+  def __init__(self, message):
+    super().__init__(message)
+    self.message = message
 
 
 class UnsupportedSchemeError(BrowserError):
@@ -302,6 +303,142 @@ HEAD_TAGS = [
     "style",
     "script",
 ]
+
+# 전역 폰트 캐시 (BlockLayout용)
+FONTS = {}
+
+
+def get_font(size, weight, style):
+  """폰트를 캐시에서 가져오거나 새로 생성"""
+  key = (size, weight, style)
+  if key not in FONTS:
+    font = tkinter.font.Font(size=size, weight=weight, slant=style)
+    label = tkinter.Label(font=font)  # 폰트가 GC되지 않도록 참조 유지
+    FONTS[key] = (font, label)
+  return FONTS[key][0]
+
+
+class BlockLayout:
+  """
+  블록 레이아웃: 인라인 텍스트 배치를 담당
+
+  DOM 노드를 받아서 화면에 그릴 display_list를 생성합니다.
+  폰트 스타일(bold, italic, size)과 줄바꿈을 처리합니다.
+  """
+
+  HSTEP = 13  # 수평 여백
+  VSTEP = 18  # 수직 여백
+  WIDTH = 800  # 화면 너비
+
+  def __init__(self, node, parent, previous):
+    self.node = node  # 이 레이아웃이 담당하는 DOM 노드
+    self.parent = parent  # 부모 레이아웃 (DocumentLayout)
+    self.previous = previous  # 이전 형제 레이아웃 (없으면 None)
+    self.children = []  # 자식 레이아웃들
+
+  def layout(self):
+    """레이아웃 계산 실행"""
+    self.display_list = []  # (x, y, word, font) 튜플 리스트
+
+    # 커서 위치 초기화
+    self.cursor_x = self.HSTEP
+    self.cursor_y = self.VSTEP
+
+    # 폰트 스타일 초기화
+    self.weight = "normal"  # normal 또는 bold
+    self.style = "roman"  # roman 또는 italic
+    self.size = 12  # 기본 폰트 크기
+
+    self.line = []  # 현재 줄에 쌓인 단어들
+    self.recurse(self.node)
+    self.flush()  # 마지막 줄 처리
+
+  def recurse(self, tree):
+    """DOM 트리를 재귀적으로 순회하며 레이아웃 처리"""
+    if isinstance(tree, Text):
+      # 텍스트 노드: 공백으로 분리하여 각 단어 처리
+      for word in tree.text.split():
+        self.word(word)
+    else:
+      # 엘리먼트 노드: 태그 열기 → 자식 처리 → 태그 닫기
+      self.open_tag(tree.tag)
+      for child in tree.children:
+        self.recurse(child)
+      self.close_tag(tree.tag)
+
+  def open_tag(self, tag):
+    """여는 태그 처리 - 스타일 변경"""
+    if tag == "i":
+      self.style = "italic"
+    elif tag == "b":
+      self.weight = "bold"
+    elif tag == "small":
+      self.size -= 2
+    elif tag == "big":
+      self.size += 4
+    elif tag == "br":
+      self.flush()  # 줄바꿈
+
+  def close_tag(self, tag):
+    """닫는 태그 처리 - 스타일 복원"""
+    if tag == "i":
+      self.style = "roman"
+    elif tag == "b":
+      self.weight = "normal"
+    elif tag == "small":
+      self.size += 2
+    elif tag == "big":
+      self.size -= 4
+    elif tag == "p":
+      self.flush()
+      self.cursor_y += self.VSTEP  # 문단 간격 추가
+
+  def word(self, word):
+    """단어를 현재 줄에 배치"""
+    font = get_font(self.size, self.weight, self.style)
+    w = font.measure(word)
+
+    # 줄 끝을 넘으면 줄바꿈
+    if self.cursor_x + w > self.WIDTH - self.HSTEP:
+      self.flush()
+
+    self.line.append((self.cursor_x, word, font))
+    self.cursor_x += w + font.measure(" ")  # 단어 + 공백 너비
+
+  def flush(self):
+    """현재 줄을 display_list에 추가하고 다음 줄로 이동"""
+    if not self.line:
+      return
+
+    # 줄에서 가장 큰 ascent 찾기
+    metrics = [font.metrics() for x, word, font in self.line]
+    max_ascent = max([metric["ascent"] for metric in metrics])
+
+    # baseline 계산 (1.25는 줄 간격 계수)
+    baseline = self.cursor_y + 1.25 * max_ascent
+
+    # 각 단어의 y 위치 계산하여 display_list에 추가
+    for x, word, font in self.line:
+      y = baseline - font.metrics("ascent")
+      self.display_list.append((x, y, word, font))
+
+    # 다음 줄로 이동
+    max_descent = max([metric["descent"] for metric in metrics])
+    self.cursor_y = baseline + 1.25 * max_descent
+    self.cursor_x = self.HSTEP
+    self.line = []
+
+
+class DocumentLayout:
+  def __init__(self, node) -> None:
+    self.node = node
+    self.parent = None
+    self.children = []
+
+  def layout(self) -> None:
+    child = BlockLayout(self.node, self, None)
+    self.children.append(child)
+    child.layout()
 
 
 class HTMLParser:
