@@ -3,6 +3,15 @@ import ssl
 import tkinter
 import tkinter.font
 
+BLOCK_ELEMENTS = [
+  "html", "body", "article", "section", "nav", "aside",
+  "h1", "h2", "h3", "h4", "h5", "h6", "hgroup", "header",
+  "footer", "address", "p", "hr", "pre", "blockquote",
+  "ol", "ul", "menu", "li", "dl", "dt", "dd", "figure",
+  "figcaption", "main", "div", "table", "form", "fieldset",
+  "legend", "details", "summary"
+]
+
 
 class BrowserError(Exception):
   """브라우저 기본 예외"""
@@ -253,8 +262,15 @@ class Browser:
   def load(self, url):
     body = self.http_client.request(url)
     self.nodes = HTMLParser(body).parse()
-    self.display_list = Layout(self.nodes, self.config,
-                               self.font_cache).display_list
+
+    # 새 레이아웃 시스템: DocumentLayout + BlockLayout 트리
+    self.document = DocumentLayout(self.nodes)
+    self.document.layout()
+
+    # paint_tree로 모든 그리기 명령 수집
+    self.display_list = []
+    paint_tree(self.document, self.display_list)
+
     self.draw()
 
   def draw(self):
@@ -336,25 +352,82 @@ class BlockLayout:
     self.previous = previous  # 이전 형제 레이아웃 (없으면 None)
     self.children = []  # 자식 레이아웃들
 
+    # 위치와 크기 (layout()에서 계산됨)
+    self.x = None
+    self.y = None
+    self.width = None
+    self.height = None
+
   def layout(self):
     """레이아웃 계산 실행"""
     self.display_list = []  # (x, y, word, font) 튜플 리스트
 
-    # 커서 위치 초기화
-    self.cursor_x = self.HSTEP
-    self.cursor_y = self.VSTEP
+    # 1. 위치 계산: 부모로부터 x, width 상속
+    self.x = self.parent.x
+    self.width = self.parent.width
 
-    # 폰트 스타일 초기화
-    self.weight = "normal"  # normal 또는 bold
-    self.style = "roman"  # roman 또는 italic
-    self.size = 12  # 기본 폰트 크기
+    # 2. y 위치: 이전 형제가 있으면 그 아래, 없으면 부모의 y
+    if self.previous:
+      self.y = self.previous.y + self.previous.height
+    else:
+      self.y = self.parent.y
 
-    self.line = []  # 현재 줄에 쌓인 단어들
-    self.recurse(self.node)
-    self.flush()  # 마지막 줄 처리
+    # 3. 레이아웃 모드에 따라 처리
+    mode = self.layout_mode()
+
+    if mode == "block":
+      # 블록 모드: 각 자식에 대해 BlockLayout 생성
+      previous = None
+      for child in self.node.children:
+        next_layout = BlockLayout(child, self, previous)
+        self.children.append(next_layout)
+        previous = next_layout
+    else:
+      # 인라인 모드: 텍스트를 수평으로 배치
+      self.cursor_x = 0
+      self.cursor_y = 0
+      self.weight = "normal"
+      self.style = "roman"
+      self.size = 12
+      self.line = []
+      self.recurse(self.node)
+      self.flush()
+
+    # 4. 자식 레이아웃 계산 (재귀)
+    for child in self.children:
+      child.layout()
+
+    # 5. height 계산
+    if mode == "block":
+      # 블록 모드: 자식들의 높이 합
+      self.height = sum([child.height for child in self.children])
+    else:
+      # 인라인 모드: 텍스트 콘텐츠의 높이
+      self.height = self.cursor_y
+
+  def layout_mode(self):
+    """
+    레이아웃 모드 결정: 블록 vs 인라인
+
+    - 텍스트 노드 → 인라인
+    - 자식 중 블록 요소가 있으면 → 블록 (자식들을 수직 배치)
+    - 자식이 있지만 모두 인라인이면 → 인라인 (텍스트처럼 배치)
+    - 자식이 없으면 → 블록 (빈 블록)
+    """
+    if isinstance(self.node, Text):
+      return "inline"
+    elif any([
+        isinstance(child, Element) and child.tag in BLOCK_ELEMENTS
+        for child in self.node.children
+    ]):
+      return "block"
+    elif self.node.children:
+      return "inline"
+    else:
+      return "block"
 
   def recurse(self, tree):
-    """DOM 트리를 재귀적으로 순회하며 레이아웃 처리"""
+    """DOM 트리를 재귀적으로 순회하며 레이아웃 처리 (인라인 모드용)"""
     if isinstance(tree, Text):
       # 텍스트 노드: 공백으로 분리하여 각 단어 처리
       for word in tree.text.split():
@@ -398,8 +471,8 @@ class BlockLayout:
     font = get_font(self.size, self.weight, self.style)
     w = font.measure(word)
 
-    # 줄 끝을 넘으면 줄바꿈
-    if self.cursor_x + w > self.WIDTH - self.HSTEP:
+    # 줄 끝을 넘으면 줄바꿈 (self.width 사용)
+    if self.cursor_x + w > self.width:
       self.flush()
 
     self.line.append((self.cursor_x, word, font))
@@ -411,34 +484,82 @@ class BlockLayout:
       return
 
     # 줄에서 가장 큰 ascent 찾기
-    metrics = [font.metrics() for x, word, font in self.line]
+    metrics = [font.metrics() for rel_x, word, font in self.line]
     max_ascent = max([metric["ascent"] for metric in metrics])
 
     # baseline 계산 (1.25는 줄 간격 계수)
     baseline = self.cursor_y + 1.25 * max_ascent
 
-    # 각 단어의 y 위치 계산하여 display_list에 추가
-    for x, word, font in self.line:
-      y = baseline - font.metrics("ascent")
+    # 각 단어의 위치 계산: 상대 좌표 → 절대 좌표
+    for rel_x, word, font in self.line:
+      x = self.x + rel_x  # 상대 x + 블록의 절대 x
+      y = self.y + baseline - font.metrics("ascent")  # 상대 y + 블록의 절대 y
       self.display_list.append((x, y, word, font))
 
     # 다음 줄로 이동
     max_descent = max([metric["descent"] for metric in metrics])
     self.cursor_y = baseline + 1.25 * max_descent
-    self.cursor_x = self.HSTEP
+    self.cursor_x = 0  # 줄 시작으로 리셋 (상대 좌표이므로 0)
     self.line = []
+
+  def paint(self):
+    """
+    그리기 명령 반환
+
+    이 레이아웃의 display_list를 반환합니다.
+    블록 모드에서는 빈 리스트 (자식이 직접 그림),
+    인라인 모드에서는 텍스트 그리기 명령들입니다.
+    """
+    return self.display_list
 
 
 class DocumentLayout:
+  """
+  문서 레이아웃: 레이아웃 트리의 루트
+
+  전체 문서의 크기와 위치를 정의하고,
+  자식 BlockLayout들의 시작점을 제공합니다.
+  """
+
+  HSTEP = 13  # 수평 여백
+  VSTEP = 18  # 수직 여백
+  WIDTH = 800  # 화면 너비
+
   def __init__(self, node) -> None:
     self.node = node
     self.parent = None
     self.children = []
 
   def layout(self) -> None:
+    # 문서의 위치와 크기 설정
+    self.width = self.WIDTH - 2 * self.HSTEP  # 좌우 여백 제외
+    self.x = self.HSTEP  # 왼쪽 여백
+    self.y = self.VSTEP  # 상단 여백
+
+    # 자식 레이아웃 생성 및 계산
     child = BlockLayout(self.node, self, None)
     self.children.append(child)
     child.layout()
+
+    # 문서의 총 높이 = 자식의 높이
+    self.height = child.height
+
+  def paint(self):
+    """DocumentLayout은 직접 그릴 내용이 없음"""
+    return []
+
+
+def paint_tree(layout_object, display_list):
+  """
+  레이아웃 트리를 순회하며 그리기 명령 수집
+
+  각 레이아웃 객체의 paint() 결과를 display_list에 추가하고,
+  자식들에 대해 재귀적으로 같은 작업을 수행합니다.
+  """
+  display_list.extend(layout_object.paint())
+
+  for child in layout_object.children:
+    paint_tree(child, display_list)
 
 
 class HTMLParser:
